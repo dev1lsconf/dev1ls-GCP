@@ -31,3 +31,8 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# GCP Credentials & Keys
+*key*.json
+*credentials*.json
+service-account*.json
