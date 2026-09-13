@@ -55,7 +55,10 @@ flowchart TD
 | `GET` | `/readyz` | Readiness Probe | El balanceador sabe cuándo dirigirle tráfico |
 | `GET` | `/api/v1/info` | Hostname del contenedor, SO, memoria y uptime | Muestra cómo Cloud Run escala y balancea |
 | `GET` | `/api/v1/network` | IP del cliente, cabeceras y proxy inverso | Análisis de proxies, Ingress y balanceadores |
-| `GET` | `/metrics` | Telemetría en tiempo real (peticiones, GC, RAM) | Observabilidad y monitorización |
+| `GET` | `/metrics` | Telemetría en tiempo real (JSON) | Observabilidad y monitorización |
+| `GET` | `/metrics/prometheus` | Formato estándar de Prometheus / OpenMetrics | Integración con Prometheus / Datadog / Grafana |
+| `POST` | `/api/v1/chaos/toggle-ready` | Alterna `/readyz` entre 200 y 503 | Pruebas de Chaos Engineering y degradación de servicio |
+| `GET` | `/api/v1/chaos/delay?duration=2s` | Simula latencia downstream | Pruebas de timeouts y límites de concurrencia |
 
 ---
 

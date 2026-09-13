@@ -26,6 +26,9 @@ func main() {
 	mux.HandleFunc("GET /api/v1/info", handlers.InfoHandler(cfg))
 	mux.HandleFunc("GET /api/v1/network", handlers.NetworkHandler)
 	mux.HandleFunc("GET /metrics", handlers.MetricsHandler)
+	mux.HandleFunc("GET /metrics/prometheus", handlers.PrometheusMetricsHandler)
+	mux.HandleFunc("POST /api/v1/chaos/toggle-ready", handlers.ChaosToggleReadyHandler)
+	mux.HandleFunc("GET /api/v1/chaos/delay", handlers.ChaosDelayHandler)
 
 	// Wrap entire mux with structured JSON logging middleware
 	loggedHandler := handlers.LoggingMiddleware(mux)

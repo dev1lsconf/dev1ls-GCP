@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"runtime"
@@ -15,6 +16,7 @@ var (
 	startTime      = time.Now()
 	totalRequests  uint64
 	activeRequests int64
+	isReady        int32 = 1 // 1 = ready, 0 = unready
 )
 
 // ResponseWriter wrapper to capture HTTP status code for logging and metrics
@@ -64,12 +66,89 @@ func HealthzHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ReadyzHandler responds with 200 OK when ready to accept traffic
+// ReadyzHandler responds with 200 OK when ready, or 503 if marked unready (Chaos testing)
 func ReadyzHandler(w http.ResponseWriter, r *http.Request) {
+	if atomic.LoadInt32(&isReady) == 0 {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status": "unready",
+			"reason": "simulated readiness failure via chaos endpoint",
+			"time":   time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": "ready",
 		"time":   time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+// ChaosToggleReadyHandler toggles the readiness probe state (simulate instance degradation)
+func ChaosToggleReadyHandler(w http.ResponseWriter, r *http.Request) {
+	var newState int32
+	if atomic.LoadInt32(&isReady) == 1 {
+		newState = 0
+	} else {
+		newState = 1
+	}
+	atomic.StoreInt32(&isReady, newState)
+
+	statusStr := "ready (200)"
+	if newState == 0 {
+		statusStr = "unready (503 Service Unavailable)"
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":       "Readiness probe state toggled",
+		"is_ready":      newState == 1,
+		"readyz_status": statusStr,
+	})
+}
+
+// ChaosDelayHandler simulates downstream latency or blocking work
+func ChaosDelayHandler(w http.ResponseWriter, r *http.Request) {
+	dStr := r.URL.Query().Get("duration")
+	if dStr == "" {
+		dStr = "1s"
+	}
+	d, err := time.ParseDuration(dStr)
+	if err != nil || d > 10*time.Second {
+		d = 1 * time.Second
+	}
+	time.Sleep(d)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "Delayed response completed",
+		"delayed": d.String(),
+	})
+}
+
+// PrometheusMetricsHandler provides standard OpenMetrics / Prometheus scrape format
+func PrometheusMetricsHandler(w http.ResponseWriter, r *http.Request) {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	fmt.Fprintf(w, "# HELP devops_http_requests_total Total number of HTTP requests processed\n")
+	fmt.Fprintf(w, "# TYPE devops_http_requests_total counter\n")
+	fmt.Fprintf(w, "devops_http_requests_total %d\n\n", atomic.LoadUint64(&totalRequests))
+
+	fmt.Fprintf(w, "# HELP devops_http_active_requests Number of requests currently in-flight\n")
+	fmt.Fprintf(w, "# TYPE devops_http_active_requests gauge\n")
+	fmt.Fprintf(w, "devops_http_active_requests %d\n\n", atomic.LoadInt64(&activeRequests))
+
+	fmt.Fprintf(w, "# HELP devops_uptime_seconds Total seconds since server start\n")
+	fmt.Fprintf(w, "# TYPE devops_uptime_seconds gauge\n")
+	fmt.Fprintf(w, "devops_uptime_seconds %.2f\n\n", time.Since(startTime).Seconds())
+
+	fmt.Fprintf(w, "# HELP devops_memory_alloc_bytes Heap bytes currently allocated\n")
+	fmt.Fprintf(w, "# TYPE devops_memory_alloc_bytes gauge\n")
+	fmt.Fprintf(w, "devops_memory_alloc_bytes %d\n\n", m.Alloc)
+
+	fmt.Fprintf(w, "# HELP devops_goroutines Number of running goroutines\n")
+	fmt.Fprintf(w, "# TYPE devops_goroutines gauge\n")
+	fmt.Fprintf(w, "devops_goroutines %d\n", runtime.NumGoroutine())
 }
 
 // InfoHandler returns runtime and infrastructure details
@@ -105,33 +184,33 @@ func InfoHandler(cfg *config.Config) http.HandlerFunc {
 // NetworkHandler demonstrates how cloud proxies, load balancers, and Ingress route requests
 func NetworkHandler(w http.ResponseWriter, r *http.Request) {
 	networkData := map[string]any{
-		"client_ip":        getClientIP(r),
-		"remote_addr":      r.RemoteAddr,
-		"host":             r.Host,
-		"proto":            r.Proto,
+		"client_ip":   getClientIP(r),
+		"remote_addr": r.RemoteAddr,
+		"host":        r.Host,
+		"proto":       r.Proto,
 		"headers": map[string]string{
-			"X-Forwarded-For":   r.Header.Get("X-Forwarded-For"),
-			"X-Forwarded-Proto": r.Header.Get("X-Forwarded-Proto"),
+			"X-Forwarded-For":       r.Header.Get("X-Forwarded-For"),
+			"X-Forwarded-Proto":     r.Header.Get("X-Forwarded-Proto"),
 			"X-Cloud-Trace-Context": r.Header.Get("X-Cloud-Trace-Context"), // GCP Trace Header
-			"User-Agent":        r.Header.Get("User-Agent"),
+			"User-Agent":            r.Header.Get("User-Agent"),
 		},
 	}
 
 	writeJSON(w, http.StatusOK, networkData)
 }
 
-// MetricsHandler provides basic telemetry counters
+// MetricsHandler provides basic telemetry counters as JSON
 func MetricsHandler(w http.ResponseWriter, r *http.Request) {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 
 	metrics := map[string]any{
-		"total_requests":   atomic.LoadUint64(&totalRequests),
-		"active_requests":  atomic.LoadInt64(&activeRequests),
-		"uptime_seconds":   time.Since(startTime).Seconds(),
-		"memory_alloc_kb":  m.Alloc / 1024,
-		"memory_sys_kb":    m.Sys / 1024,
-		"num_gc_runs":      m.NumGC,
+		"total_requests":  atomic.LoadUint64(&totalRequests),
+		"active_requests": atomic.LoadInt64(&activeRequests),
+		"uptime_seconds":  time.Since(startTime).Seconds(),
+		"memory_alloc_kb": m.Alloc / 1024,
+		"memory_sys_kb":   m.Sys / 1024,
+		"num_gc_runs":     m.NumGC,
 	}
 
 	writeJSON(w, http.StatusOK, metrics)
@@ -147,12 +226,15 @@ func RootHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message": "DevOps Cloud Prototype API running successfully!",
 		"docs": map[string]string{
-			"GET /":               "API Root & docs overview",
-			"GET /healthz":        "Liveness check for container orchestration",
-			"GET /readyz":         "Readiness check before routing traffic",
-			"GET /api/v1/info":    "Runtime, container hostname, and system stats",
-			"GET /api/v1/network": "Client IP, headers, and reverse proxy details",
-			"GET /metrics":        "Application and memory metrics",
+			"GET /":                           "API Root & docs overview",
+			"GET /healthz":                     "Liveness check for container orchestration",
+			"GET /readyz":                      "Readiness check before routing traffic (503 when unready)",
+			"GET /api/v1/info":                 "Runtime, container hostname, and system stats",
+			"GET /api/v1/network":              "Client IP, headers, and reverse proxy details",
+			"GET /metrics":                     "Application metrics (JSON format)",
+			"GET /metrics/prometheus":          "Standard Prometheus scrape format",
+			"POST /api/v1/chaos/toggle-ready":  "Chaos testing: Toggle readiness status (200 <-> 503)",
+			"GET /api/v1/chaos/delay?duration=2s": "Chaos testing: Simulate latency/slow requests",
 		},
 	})
 }

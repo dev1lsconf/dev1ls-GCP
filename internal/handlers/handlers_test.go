@@ -75,3 +75,50 @@ func TestInfoHandler(t *testing.T) {
 		t.Errorf("expected status 200, got %d", res.StatusCode)
 	}
 }
+
+func TestPrometheusMetricsHandler(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/metrics/prometheus", nil)
+	w := httptest.NewRecorder()
+
+	PrometheusMetricsHandler(w, req)
+
+	res := w.Result()
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", res.StatusCode)
+	}
+
+	contentType := res.Header.Get("Content-Type")
+	if contentType == "" {
+		t.Errorf("expected non-empty Content-Type")
+	}
+}
+
+func TestChaosToggleAndReadyz(t *testing.T) {
+	// Toggle to unready
+	reqToggle := httptest.NewRequest(http.MethodPost, "/api/v1/chaos/toggle-ready", nil)
+	wToggle := httptest.NewRecorder()
+	ChaosToggleReadyHandler(wToggle, reqToggle)
+
+	// Readyz should now return 503
+	reqReady := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	wReady := httptest.NewRecorder()
+	ReadyzHandler(wReady, reqReady)
+
+	if wReady.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 Service Unavailable after chaos toggle, got %d", wReady.Code)
+	}
+
+	// Toggle back to ready
+	wToggle2 := httptest.NewRecorder()
+	ChaosToggleReadyHandler(wToggle2, reqToggle)
+
+	// Readyz should return 200 OK
+	wReady2 := httptest.NewRecorder()
+	ReadyzHandler(wReady2, reqReady)
+
+	if wReady2.Code != http.StatusOK {
+		t.Errorf("expected 200 OK after restoring readiness, got %d", wReady2.Code)
+	}
+}
